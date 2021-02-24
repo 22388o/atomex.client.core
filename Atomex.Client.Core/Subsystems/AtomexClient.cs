@@ -48,6 +48,8 @@ namespace Atomex.Subsystems
         private readonly HttpClient _httpClient;
         private string _token;
         private bool _isConnected;
+        private readonly AsyncQueue<(long, DateTimeOffset)> _waitingQueue;
+        private readonly AsyncQueue<long> _swapsQueue;
 
         private TimeSpan TransactionConfirmationCheckInterval(string currency) =>
             currency == "BTC"
@@ -71,6 +73,9 @@ namespace Atomex.Subsystems
             _cts = new CancellationTokenSource();
 
             _httpClient = new HttpClient { BaseAddress = new Uri(Configuration[$"Services:{Account.Network}:Exchange:Url"]) };
+
+            _waitingQueue = new AsyncQueue<(long, DateTimeOffset)>();
+            _swapsQueue = new AsyncQueue<long>();
         }
 
         public async Task StartAsync()
@@ -82,7 +87,8 @@ namespace Atomex.Subsystems
                 symbols: SymbolsProvider.GetSymbols(Account.Network));
 
             // start async unconfirmed transactions tracking
-            TrackUnconfirmedTransactionsAsync(_cts.Token).FireAndForget();
+            TrackUnconfirmedTransactionsAsync(_cts.Token)
+                .FireAndForget();
 
             // init swap manager
             SwapManager = new SwapManager(
@@ -94,7 +100,8 @@ namespace Atomex.Subsystems
             SwapManager.SwapUpdated += (sender, args) => SwapUpdated?.Invoke(sender, args);
 
             // start async swaps restore
-            SwapManager.RestoreSwapsAsync(_cts.Token).FireAndForget();
+            SwapManager.RestoreSwapsAsync(_cts.Token)
+                .FireAndForget();
 
             // get auth token
             _token = await AuthAsync()
@@ -108,6 +115,9 @@ namespace Atomex.Subsystems
             // todo: run orders, swaps & marketdata loops
             ServiceConnected?.Invoke(this, new TerminalServiceEventArgs(TerminalService.Exchange));
             ServiceConnected?.Invoke(this, new TerminalServiceEventArgs(TerminalService.MarketData));
+
+            _ = SwapsUpdaterAsync(_cts.Token);
+            _ = SwapsWaitingAsync(_cts.Token);
         }
 
         public Task StopAsync()
@@ -211,7 +221,21 @@ namespace Atomex.Subsystems
                     return;
                 }
 
-                // todo: if true raise OrderUpdated -> Canceled
+                var result = JsonConvert
+                    .DeserializeObject<JObject>(responseContent)
+                    ?["result"]
+                    ?.Value<bool>() ?? false;
+
+                if (result)
+                {
+                    order.Status = OrderStatus.Canceled;
+
+                    await Account
+                        .UpsertOrderAsync(order)
+                        .ConfigureAwait(false);
+
+                    OrderReceived(this, new OrderEventArgs(order));
+                }
             }
             catch (Exception e)
             {
@@ -242,8 +266,8 @@ namespace Atomex.Subsystems
 
                     requisites = new
                     {
-                        baseCurrencyContract  = "",
-                        quoteCurrencyContract = ""
+                        baseCurrencyContract  = GetSwapContract(order.Symbol.BaseCurrency()),
+                        quoteCurrencyContract = GetSwapContract(order.Symbol.QuoteCurrency())
                     }
                 };
 
@@ -254,7 +278,9 @@ namespace Atomex.Subsystems
                         mediaType: "application/json"))
                     .ConfigureAwait(false);
 
-                var responseContent = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
+                var responseContent = await response.Content
+                    .ReadAsStringAsync()
+                    .ConfigureAwait(false);
 
                 if (!response.IsSuccessStatusCode)
                 {
@@ -262,8 +288,18 @@ namespace Atomex.Subsystems
                     return;
                 }
 
-                // todo: get order id and save to db??
-                // todo: if order id not null taise OrderUpdated -> Placed
+                order.Id = JsonConvert.DeserializeObject<JObject>(responseContent)?["orderId"]?.Value<long>() ?? 0;
+
+                if (order.Id != 0)
+                {
+                    order.Status = OrderStatus.Placed;
+
+                    await Account
+                        .UpsertOrderAsync(order)
+                        .ConfigureAwait(false);
+
+                    OrderReceived(this, new OrderEventArgs(order));
+                }
             }
             catch (Exception e)
             {
@@ -271,17 +307,168 @@ namespace Atomex.Subsystems
             }
         }
 
+        private string GetSwapContract(string currency) =>
+            currency switch
+            {
+                "ETH" => Account.Currencies.Get<Ethereum>("ETH").SwapContractAddress,
+                "XTZ" => Account.Currencies.Get<Tezos>("XTZ").SwapContractAddress,
+                _ => null
+            };
+
         public void SubscribeToMarketData(SubscriptionType type)
         {
             // nothing to do...
         }
 
+        public enum PartyStatus
+        {
+            Created,
+            Involved,
+            PartiallyInitiated,
+            Initiated,
+            Redeemed,
+            Refunded,
+            Lost,
+            Jackpot
+        }
+
+        private async Task SwapsUpdaterAsync(CancellationToken cancellationToken = default)
+        {
+            try
+            {
+                while (cancellationToken.IsCancellationRequested)
+                {
+                    var swapId = await _swapsQueue
+                        .TakeAsync(cancellationToken)
+                        .ConfigureAwait(false);
+
+                    var response = await _httpClient
+                        .GetAsync($"/swaps/{swapId}")
+                        .ConfigureAwait(false);
+
+                    var responseContent = await response.Content
+                        .ReadAsStringAsync()
+                        .ConfigureAwait(false);
+
+                    if (!response.IsSuccessStatusCode)
+                    {
+                        Log.Error($"Swap status getting failed: {responseContent}");
+                        return;
+                    }
+
+                    var receivedSwap = JsonConvert.DeserializeObject<JObject>(responseContent);
+
+                    var status = SwapStatus.Empty;
+
+                    var userStatus  = (PartyStatus)Enum.Parse(typeof(PartyStatus), receivedSwap["user"]["status"].Value<string>());
+                    var partyStatus = (PartyStatus)Enum.Parse(typeof(PartyStatus), receivedSwap["user"]["status"].Value<string>());
+
+                    if (userStatus > PartyStatus.Created)
+                        status |= SwapStatus.Initiated;
+
+                    if (partyStatus > PartyStatus.Created)
+                        status |= SwapStatus.Accepted;
+
+                    if (userStatus == PartyStatus.Created || partyStatus == PartyStatus.Created)
+                    {
+                        // needs to wait
+                        _waitingQueue.Add((swapId, DateTimeOffset.UtcNow));
+                    }
+
+                    var swap = new Swap
+                    {
+                        Id         = receivedSwap["id"].Value<long>(),
+                        SecretHash = Hex.FromString(receivedSwap["secretHash"].Value<string>()),
+                        Status     = status,
+
+                        TimeStamp    = receivedSwap["timeStamp"].Value<DateTime>(),
+                        Symbol       = receivedSwap["symbol"].Value<string>(),
+                        Side         = (Side)Enum.Parse(typeof(Side), receivedSwap["side"].Value<string>()),
+                        Price        = receivedSwap["price"].Value<decimal>(),
+                        Qty          = receivedSwap["qty"].Value<decimal>(),
+                        IsInitiative = receivedSwap["isInitiator"].Value<bool>(),
+
+                        ToAddress       = receivedSwap["user"]?["requisites"]?["receivingAddress"]?.Value<string>(),
+                        RewardForRedeem = receivedSwap["user"]?["requisites"]?["rewardForRedeem"]?.Value<decimal>() ?? 0,
+
+                        PartyAddress         = receivedSwap["counterParty"]?["requisites"]?["receivingAddress"]?.Value<string>(),
+                        PartyRewardForRedeem = receivedSwap["counterParty"]?["requisites"]?["rewardForRedeem"]?.Value<decimal>() ?? 0,
+                    };
+
+                    await SwapManager
+                        .HandleSwapAsync(swap, cancellationToken)
+                        .ConfigureAwait(false);
+
+                    await Task
+                        .Delay(1000, cancellationToken)
+                        .ConfigureAwait(false);
+                }
+            }
+            catch (Exception e)
+            {
+                Log.Error(e, "Swaps updating error");
+            }
+        }
+
+        private async Task SwapsWaitingAsync(CancellationToken cancellationToken = default)
+        {
+            try
+            {
+                while (cancellationToken.IsCancellationRequested)
+                {
+                    var (swapId, timeStamp) = await _waitingQueue
+                        .TakeAsync(cancellationToken)
+                        .ConfigureAwait(false);
+
+                    if (DateTimeOffset.UtcNow - timeStamp < TimeSpan.FromSeconds(3))
+                    {
+                        await Task
+                            .Delay(DateTimeOffset.UtcNow - timeStamp, cancellationToken)
+                            .ConfigureAwait(false);
+                    }
+
+                    _swapsQueue.Add(swapId);
+                }
+            }
+            catch (Exception e)
+            {
+                Log.Error(e, "Swaps waiting error");
+            }
+        }
+
+        //private Task
+
         #region ISwapInterface
 
-        public void SwapInitiateAsync(Swap swap)
+        public async void SwapInitiateAsync(Swap swap)
         {
-            // todo: call add swap requisites
-            throw new NotImplementedException();
+            var body = new
+            {
+                secretHash       = swap.SecretHash.ToHexString(),
+                receivingAddress = swap.ToAddress,
+                refundAddress    = swap.RefundAddress,
+                rewardForRedeem  = swap.RewardForRedeem,
+                lockTime         = CurrencySwap.DefaultInitiatorLockTimeInSeconds
+            };
+
+            var response = await _httpClient
+                .PostAsync($"/swaps/{swap.Id}/requisites", new StringContent(
+                    content: JsonConvert.SerializeObject(body),
+                    encoding: Encoding.UTF8,
+                    mediaType: "application/json"))
+                .ConfigureAwait(false);
+
+            var responseContent = await response.Content
+                .ReadAsStringAsync()
+                .ConfigureAwait(false);
+
+            if (!response.IsSuccessStatusCode)
+            {
+                Log.Error($"Swap initiated send failed: {responseContent}");
+                return;
+            }
+
+            // todo: check boolean response
         }
 
         public void SwapAcceptAsync(Swap swap)
@@ -291,8 +478,7 @@ namespace Atomex.Subsystems
 
         public void SwapStatusAsync(Request<Swap> swap)
         {
-            // todo: call get swap and raise SwapManager.UpdateSwap
-            throw new NotImplementedException();
+            _swapsQueue.Add(swap.Data.Id);
         }
 
         #endregion ISwapInterface
@@ -316,7 +502,8 @@ namespace Atomex.Subsystems
 
                 foreach (var tx in txs)
                     if (!tx.IsConfirmed && tx.State != BlockchainTransactionState.Failed)
-                        TrackTransactionAsync(tx, cancellationToken).FireAndForget();
+                        TrackTransactionAsync(tx, cancellationToken)
+                            .FireAndForget();
             }
             catch (Exception e)
             {
