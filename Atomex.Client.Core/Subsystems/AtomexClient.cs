@@ -116,8 +116,9 @@ namespace Atomex.Subsystems
             ServiceConnected?.Invoke(this, new TerminalServiceEventArgs(TerminalService.Exchange));
             ServiceConnected?.Invoke(this, new TerminalServiceEventArgs(TerminalService.MarketData));
 
-            _ = SwapsUpdaterAsync(_cts.Token);
+            _ = SwapsTrackerAsync(_cts.Token);
             _ = SwapsWaitingAsync(_cts.Token);
+            _ = SwapsUpdaterAsync(_cts.Token);
         }
 
         public Task StopAsync()
@@ -160,7 +161,7 @@ namespace Atomex.Subsystems
             };
 
             var response = await _httpClient
-                .PostAsync("/token", new StringContent(
+                .PostAsync("token", new StringContent(
                     content: JsonConvert.SerializeObject(body),
                     encoding: Encoding.UTF8,
                     mediaType: "application/json"))
@@ -208,7 +209,7 @@ namespace Atomex.Subsystems
             try
             {
                 var response = await _httpClient
-                    .DeleteAsync($"/orders/{order.Id}?symbol={order.Symbol}&side={order.Side}")
+                    .DeleteAsync($"orders/{order.Id}?symbol={order.Symbol}&side={order.Side}")
                     .ConfigureAwait(false);
 
                 var responseContent = await response.Content
@@ -245,7 +246,7 @@ namespace Atomex.Subsystems
 
         public async void OrderSendAsync(Order order)
         {
-            order.ClientOrderId = Guid.NewGuid().ToString();
+            order.ClientOrderId = Guid.NewGuid().ToByteArray().ToHexString(0, 16);
 
             try
             {
@@ -272,7 +273,7 @@ namespace Atomex.Subsystems
                 };
 
                 var response = await _httpClient
-                    .PostAsync("/orders", new StringContent(
+                    .PostAsync("orders", new StringContent(
                         content: JsonConvert.SerializeObject(body),
                         encoding: Encoding.UTF8,
                         mediaType: "application/json"))
@@ -332,18 +333,18 @@ namespace Atomex.Subsystems
             Jackpot
         }
 
-        private async Task SwapsUpdaterAsync(CancellationToken cancellationToken = default)
+        private async Task SwapsTrackerAsync(CancellationToken cancellationToken = default)
         {
             try
             {
-                while (cancellationToken.IsCancellationRequested)
+                while (!cancellationToken.IsCancellationRequested)
                 {
                     var swapId = await _swapsQueue
                         .TakeAsync(cancellationToken)
                         .ConfigureAwait(false);
 
                     var response = await _httpClient
-                        .GetAsync($"/swaps/{swapId}")
+                        .GetAsync($"swaps/{swapId}")
                         .ConfigureAwait(false);
 
                     var responseContent = await response.Content
@@ -358,42 +359,7 @@ namespace Atomex.Subsystems
 
                     var receivedSwap = JsonConvert.DeserializeObject<JObject>(responseContent);
 
-                    var status = SwapStatus.Empty;
-
-                    var userStatus  = (PartyStatus)Enum.Parse(typeof(PartyStatus), receivedSwap["user"]["status"].Value<string>());
-                    var partyStatus = (PartyStatus)Enum.Parse(typeof(PartyStatus), receivedSwap["user"]["status"].Value<string>());
-
-                    if (userStatus > PartyStatus.Created)
-                        status |= SwapStatus.Initiated;
-
-                    if (partyStatus > PartyStatus.Created)
-                        status |= SwapStatus.Accepted;
-
-                    if (userStatus == PartyStatus.Created || partyStatus == PartyStatus.Created)
-                    {
-                        // needs to wait
-                        _waitingQueue.Add((swapId, DateTimeOffset.UtcNow));
-                    }
-
-                    var swap = new Swap
-                    {
-                        Id         = receivedSwap["id"].Value<long>(),
-                        SecretHash = Hex.FromString(receivedSwap["secretHash"].Value<string>()),
-                        Status     = status,
-
-                        TimeStamp    = receivedSwap["timeStamp"].Value<DateTime>(),
-                        Symbol       = receivedSwap["symbol"].Value<string>(),
-                        Side         = (Side)Enum.Parse(typeof(Side), receivedSwap["side"].Value<string>()),
-                        Price        = receivedSwap["price"].Value<decimal>(),
-                        Qty          = receivedSwap["qty"].Value<decimal>(),
-                        IsInitiative = receivedSwap["isInitiator"].Value<bool>(),
-
-                        ToAddress       = receivedSwap["user"]?["requisites"]?["receivingAddress"]?.Value<string>(),
-                        RewardForRedeem = receivedSwap["user"]?["requisites"]?["rewardForRedeem"]?.Value<decimal>() ?? 0,
-
-                        PartyAddress         = receivedSwap["counterParty"]?["requisites"]?["receivingAddress"]?.Value<string>(),
-                        PartyRewardForRedeem = receivedSwap["counterParty"]?["requisites"]?["rewardForRedeem"]?.Value<decimal>() ?? 0,
-                    };
+                    var swap = ParseSwap(receivedSwap);
 
                     await SwapManager
                         .HandleSwapAsync(swap, cancellationToken)
@@ -406,15 +372,57 @@ namespace Atomex.Subsystems
             }
             catch (Exception e)
             {
-                Log.Error(e, "Swaps updating error");
+                Log.Error(e, "Swaps tracking error");
             }
+        }
+
+        private Swap ParseSwap(JToken receivedSwap)
+        {
+            var status = SwapStatus.Empty;
+
+            var userStatus  = (PartyStatus)Enum.Parse(typeof(PartyStatus), receivedSwap["user"]["status"].Value<string>());
+            var partyStatus = (PartyStatus)Enum.Parse(typeof(PartyStatus), receivedSwap["user"]["status"].Value<string>());
+
+            if (userStatus > PartyStatus.Created)
+                status |= SwapStatus.Initiated;
+
+            if (partyStatus > PartyStatus.Created)
+                status |= SwapStatus.Accepted;
+
+            var id = receivedSwap["id"].Value<long>();
+
+            if (userStatus == PartyStatus.Created || partyStatus == PartyStatus.Created)
+            {
+                // needs to wait
+                _waitingQueue.Add((id, DateTimeOffset.UtcNow));
+            }
+
+            return new Swap
+            {
+                Id         = receivedSwap["id"].Value<long>(),
+                SecretHash = Hex.FromString(receivedSwap["secretHash"].Value<string>()),
+                Status     = status,
+
+                TimeStamp    = receivedSwap["timeStamp"].Value<DateTime>(),
+                Symbol       = receivedSwap["symbol"].Value<string>(),
+                Side         = (Side)Enum.Parse(typeof(Side), receivedSwap["side"].Value<string>()),
+                Price        = receivedSwap["price"].Value<decimal>(),
+                Qty          = receivedSwap["qty"].Value<decimal>(),
+                IsInitiative = receivedSwap["isInitiator"].Value<bool>(),
+
+                ToAddress       = receivedSwap["user"]?["requisites"]?["receivingAddress"]?.Value<string>(),
+                RewardForRedeem = receivedSwap["user"]?["requisites"]?["rewardForRedeem"]?.Value<decimal>() ?? 0,
+
+                PartyAddress         = receivedSwap["counterParty"]?["requisites"]?["receivingAddress"]?.Value<string>(),
+                PartyRewardForRedeem = receivedSwap["counterParty"]?["requisites"]?["rewardForRedeem"]?.Value<decimal>() ?? 0,
+            };
         }
 
         private async Task SwapsWaitingAsync(CancellationToken cancellationToken = default)
         {
             try
             {
-                while (cancellationToken.IsCancellationRequested)
+                while (!cancellationToken.IsCancellationRequested)
                 {
                     var (swapId, timeStamp) = await _waitingQueue
                         .TakeAsync(cancellationToken)
@@ -436,7 +444,54 @@ namespace Atomex.Subsystems
             }
         }
 
-        //private Task
+        private async Task SwapsUpdaterAsync(CancellationToken cancellationToken = default)
+        {
+            var swaps = await Account
+                .GetSwapsAsync()
+                .ConfigureAwait(false);
+
+            var lastSwapId = swaps.MaxBy(s => s.Id).Id;
+
+            try
+            {
+                while (!cancellationToken.IsCancellationRequested)
+                {
+                    var response = await _httpClient
+                        .GetAsync($"swaps?afterId={lastSwapId}")
+                        .ConfigureAwait(false);
+
+                    var responseContent = await response.Content
+                        .ReadAsStringAsync()
+                        .ConfigureAwait(false);
+
+                    if (!response.IsSuccessStatusCode)
+                    {
+                        Log.Error($"Swaps getting failed: {responseContent}");
+                        return;
+                    }
+
+                    var receivedSwaps = JsonConvert.DeserializeObject<JArray>(responseContent);
+
+                    foreach ( var receivedSwap in receivedSwaps)
+                    {
+                        var swap = ParseSwap(receivedSwap);
+
+                        Log.Debug($"Swap with id {swap.Id} found.");
+
+                        if (lastSwapId < swap.Id)
+                            lastSwapId = swap.Id;
+                    }
+
+                    await Task
+                        .Delay(TimeSpan.FromSeconds(5))
+                        .ConfigureAwait(false);
+                }
+            }
+            catch (Exception e)
+            {
+                Log.Error(e, "Swaps updater error");
+            }
+        }
 
         #region ISwapInterface
 
@@ -452,7 +507,7 @@ namespace Atomex.Subsystems
             };
 
             var response = await _httpClient
-                .PostAsync($"/swaps/{swap.Id}/requisites", new StringContent(
+                .PostAsync($"swaps/{swap.Id}/requisites", new StringContent(
                     content: JsonConvert.SerializeObject(body),
                     encoding: Encoding.UTF8,
                     mediaType: "application/json"))
