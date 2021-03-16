@@ -21,6 +21,7 @@ using Atomex.Subsystems.Abstract;
 using Atomex.Swaps;
 using Atomex.Swaps.Abstract;
 using Atomex.Wallet.Abstract;
+using System.Linq;
 
 namespace Atomex.Subsystems
 {
@@ -370,6 +371,11 @@ namespace Atomex.Subsystems
                         .ConfigureAwait(false);
                 }
             }
+
+            catch (OperationCanceledException)
+            {
+                Log.Debug("SwapsTrackerAsync canceled.");
+            }
             catch (Exception e)
             {
                 Log.Error(e, "Swaps tracking error");
@@ -438,6 +444,10 @@ namespace Atomex.Subsystems
                     _swapsQueue.Add(swapId);
                 }
             }
+            catch (OperationCanceledException)
+            {
+                Log.Debug("SwapsWaitingAsync canceled.");
+            }
             catch (Exception e)
             {
                 Log.Error(e, "Swaps waiting error");
@@ -446,14 +456,16 @@ namespace Atomex.Subsystems
 
         private async Task SwapsUpdaterAsync(CancellationToken cancellationToken = default)
         {
-            var swaps = await Account
-                .GetSwapsAsync()
-                .ConfigureAwait(false);
-
-            var lastSwapId = swaps.MaxBy(s => s.Id).Id;
-
             try
             {
+                var swaps = await Account
+                    .GetSwapsAsync()
+                    .ConfigureAwait(false);
+
+                var lastSwapId = swaps.Any()
+                    ? swaps.MaxBy(s => s.Id).Id
+                    : 0;
+
                 while (!cancellationToken.IsCancellationRequested)
                 {
                     var response = await _httpClient
@@ -486,6 +498,10 @@ namespace Atomex.Subsystems
                         .Delay(TimeSpan.FromSeconds(5))
                         .ConfigureAwait(false);
                 }
+            }
+            catch (OperationCanceledException)
+            {
+                Log.Debug("SwapsUpdaterAsync canceled.");
             }
             catch (Exception e)
             {
