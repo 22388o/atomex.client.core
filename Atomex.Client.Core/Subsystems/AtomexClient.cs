@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Linq;
 using System.Net.Http;
 using System.Text;
 using Newtonsoft.Json;
@@ -21,7 +22,6 @@ using Atomex.Subsystems.Abstract;
 using Atomex.Swaps;
 using Atomex.Swaps.Abstract;
 using Atomex.Wallet.Abstract;
-using System.Linq;
 
 namespace Atomex.Subsystems
 {
@@ -88,8 +88,7 @@ namespace Atomex.Subsystems
                 symbols: SymbolsProvider.GetSymbols(Account.Network));
 
             // start async unconfirmed transactions tracking
-            TrackUnconfirmedTransactionsAsync(_cts.Token)
-                .FireAndForget();
+            _ = TrackUnconfirmedTransactionsAsync(_cts.Token);
 
             // init swap manager
             SwapManager = new SwapManager(
@@ -575,6 +574,10 @@ namespace Atomex.Subsystems
                     if (!tx.IsConfirmed && tx.State != BlockchainTransactionState.Failed)
                         TrackTransactionAsync(tx, cancellationToken)
                             .FireAndForget();
+            }
+            catch (OperationCanceledException)
+            {
+                Log.Debug("TrackUnconfirmedTransactionsAsync canceled.");
             }
             catch (Exception e)
             {
