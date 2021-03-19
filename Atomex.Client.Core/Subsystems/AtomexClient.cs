@@ -100,8 +100,7 @@ namespace Atomex.Subsystems
             SwapManager.SwapUpdated += (sender, args) => SwapUpdated?.Invoke(sender, args);
 
             // start async swaps restore
-            SwapManager.RestoreSwapsAsync(_cts.Token)
-                .FireAndForget();
+            _ = SwapManager.RestoreSwapsAsync(_cts.Token);
 
             // get auth token
             _token = await AuthAsync()
@@ -116,6 +115,7 @@ namespace Atomex.Subsystems
             ServiceConnected?.Invoke(this, new TerminalServiceEventArgs(TerminalService.Exchange));
             ServiceConnected?.Invoke(this, new TerminalServiceEventArgs(TerminalService.MarketData));
 
+            _ = CancelAllOrdersAsync(_cts.Token);
             _ = SwapsTrackerAsync(_cts.Token);
             _ = SwapsWaitingAsync(_cts.Token);
             _ = SwapsUpdaterAsync(_cts.Token);
@@ -229,13 +229,19 @@ namespace Atomex.Subsystems
 
                 if (result)
                 {
-                    order.Status = OrderStatus.Canceled;
+                    var dbOrder = Account
+                        .GetOrderById(order.Id);
 
-                    await Account
-                        .UpsertOrderAsync(order)
-                        .ConfigureAwait(false);
+                    if (dbOrder != null)
+                    {
+                        dbOrder.Status = OrderStatus.Canceled;
 
-                    OrderReceived(this, new OrderEventArgs(order));
+                        await Account
+                            .UpsertOrderAsync(dbOrder)
+                            .ConfigureAwait(false);
+
+                        OrderReceived(this, new OrderEventArgs(dbOrder));
+                    }
                 }
             }
             catch (Exception e)
@@ -321,6 +327,47 @@ namespace Atomex.Subsystems
             // nothing to do...
         }
 
+        private async Task CancelAllOrdersAsync(
+            CancellationToken cancellationToken = default)
+        {
+            try
+            {
+                var response = await _httpClient
+                    .GetAsync($"orders?limit=1000&active=true")
+                    .ConfigureAwait(false);
+
+                var responseContent = await response.Content
+                    .ReadAsStringAsync()
+                    .ConfigureAwait(false);
+
+                if (!response.IsSuccessStatusCode)
+                {
+                    Log.Error($"Orders getting failed: {responseContent}");
+                    return;
+                }
+
+                var receivedOrders = JsonConvert.DeserializeObject<JArray>(responseContent);
+
+                foreach (var order in receivedOrders)
+                {
+                    OrderCancelAsync(new Order
+                    {
+                        Id     = order["id"].Value<long>(),
+                        Symbol = order["symbol"].Value<string>(),
+                        Side   = (Side)Enum.Parse(typeof(Side), order["side"].Value<string>())
+                    });
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                Log.Debug("CancelAllOrdersAsync canceled.");
+            }
+            catch (Exception e)
+            {
+                Log.Error(e, "CancelAllOrdersAsync error");
+            }
+        }
+
         public enum PartyStatus
         {
             Created,
@@ -370,7 +417,6 @@ namespace Atomex.Subsystems
                         .ConfigureAwait(false);
                 }
             }
-
             catch (OperationCanceledException)
             {
                 Log.Debug("SwapsTrackerAsync canceled.");
@@ -572,8 +618,7 @@ namespace Atomex.Subsystems
 
                 foreach (var tx in txs)
                     if (!tx.IsConfirmed && tx.State != BlockchainTransactionState.Failed)
-                        TrackTransactionAsync(tx, cancellationToken)
-                            .FireAndForget();
+                        _ = TrackTransactionAsync(tx, cancellationToken);
             }
             catch (OperationCanceledException)
             {
