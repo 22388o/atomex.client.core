@@ -25,7 +25,7 @@ namespace Atomex.LiteDb
                     return;
                 }
 
-                RemoveCanceledOrders(pathToDb, sessionPassword);
+                //RemoveCanceledOrders(pathToDb, sessionPassword);
 
                 var currentVersion = GetDataBaseVersion(pathToDb, sessionPassword);
 

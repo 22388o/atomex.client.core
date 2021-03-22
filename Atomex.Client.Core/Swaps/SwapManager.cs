@@ -139,8 +139,17 @@ namespace Atomex.Swaps
                         .ConfigureAwait(false);
 
                     if (swap != null && swap.IsInitiator)
+                    {
                         await InitiateSwapAsync(swap, cancellationToken)
                             .ConfigureAwait(false);
+
+                        // handle accept by initiator
+                        if (swap.Status.HasFlag(SwapStatus.Accepted))
+                        {
+                            var acceptError = await HandleAcceptAsync(swap, receivedSwap, cancellationToken)
+                                .ConfigureAwait(false);
+                        }
+                    }
                 }
                 else
                 {

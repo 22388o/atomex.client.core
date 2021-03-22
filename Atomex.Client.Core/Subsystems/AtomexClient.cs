@@ -432,7 +432,7 @@ namespace Atomex.Subsystems
             var status = SwapStatus.Empty;
 
             var userStatus  = (PartyStatus)Enum.Parse(typeof(PartyStatus), receivedSwap["user"]["status"].Value<string>());
-            var partyStatus = (PartyStatus)Enum.Parse(typeof(PartyStatus), receivedSwap["user"]["status"].Value<string>());
+            var partyStatus = (PartyStatus)Enum.Parse(typeof(PartyStatus), receivedSwap["counterParty"]["status"].Value<string>());
 
             if (userStatus > PartyStatus.Created)
                 status |= SwapStatus.Initiated;
@@ -451,7 +451,9 @@ namespace Atomex.Subsystems
             return new Swap
             {
                 Id         = receivedSwap["id"].Value<long>(),
-                SecretHash = Hex.FromString(receivedSwap["secretHash"].Value<string>()),
+                SecretHash = receivedSwap["secretHash"]?.Value<string>() != null
+                    ? Hex.FromString(receivedSwap["secretHash"].Value<string>())
+                    : null,
                 Status     = status,
 
                 TimeStamp    = receivedSwap["timeStamp"].Value<DateTime>(),
@@ -463,6 +465,7 @@ namespace Atomex.Subsystems
 
                 ToAddress       = receivedSwap["user"]?["requisites"]?["receivingAddress"]?.Value<string>(),
                 RewardForRedeem = receivedSwap["user"]?["requisites"]?["rewardForRedeem"]?.Value<decimal>() ?? 0,
+                OrderId         = receivedSwap["user"]?["trades"]?[0]?["orderId"]?.Value<long>() ?? 0,
 
                 PartyAddress         = receivedSwap["counterParty"]?["requisites"]?["receivingAddress"]?.Value<string>(),
                 PartyRewardForRedeem = receivedSwap["counterParty"]?["requisites"]?["rewardForRedeem"]?.Value<decimal>() ?? 0,
