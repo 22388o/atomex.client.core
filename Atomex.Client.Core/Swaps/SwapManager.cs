@@ -150,6 +150,8 @@ namespace Atomex.Swaps
                                 .ConfigureAwait(false);
                         }
                     }
+                    else return new Error(Errors.SwapError, $"Swap {receivedSwap.Id} adding error.");
+
                 }
                 else
                 {

@@ -406,11 +406,17 @@ namespace Atomex.Subsystems
 
                     var receivedSwap = JsonConvert.DeserializeObject<JObject>(responseContent);
 
-                    var swap = ParseSwap(receivedSwap);
+                    var (swap, needToWait) = ParseSwap(receivedSwap);
 
-                    await SwapManager
+                    var error = await SwapManager
                         .HandleSwapAsync(swap, cancellationToken)
                         .ConfigureAwait(false);
+
+                    if (error == null && needToWait)
+                    {
+                        // needs to wait
+                        _waitingQueue.Add((swap.Id, DateTimeOffset.UtcNow));
+                    }
 
                     await Task
                         .Delay(1000, cancellationToken)
@@ -427,7 +433,7 @@ namespace Atomex.Subsystems
             }
         }
 
-        private Swap ParseSwap(JToken receivedSwap)
+        private (Swap swap, bool needToWait) ParseSwap(JToken receivedSwap)
         {
             var status = SwapStatus.Empty;
 
@@ -440,36 +446,34 @@ namespace Atomex.Subsystems
             if (partyStatus > PartyStatus.Created)
                 status |= SwapStatus.Accepted;
 
-            var id = receivedSwap["id"].Value<long>();
+            //var id = receivedSwap["id"].Value<long>();
 
-            if (userStatus == PartyStatus.Created || partyStatus == PartyStatus.Created)
-            {
-                // needs to wait
-                _waitingQueue.Add((id, DateTimeOffset.UtcNow));
-            }
+            return
+            (
+                swap: new Swap
+                {
+                    Id         = receivedSwap["id"].Value<long>(),
+                    SecretHash = receivedSwap["secretHash"]?.Value<string>() != null
+                        ? Hex.FromString(receivedSwap["secretHash"].Value<string>())
+                        : null,
+                    Status     = status,
 
-            return new Swap
-            {
-                Id         = receivedSwap["id"].Value<long>(),
-                SecretHash = receivedSwap["secretHash"]?.Value<string>() != null
-                    ? Hex.FromString(receivedSwap["secretHash"].Value<string>())
-                    : null,
-                Status     = status,
+                    TimeStamp    = receivedSwap["timeStamp"].Value<DateTime>(),
+                    Symbol       = receivedSwap["symbol"].Value<string>(),
+                    Side         = (Side)Enum.Parse(typeof(Side), receivedSwap["side"].Value<string>()),
+                    Price        = receivedSwap["price"].Value<decimal>(),
+                    Qty          = receivedSwap["qty"].Value<decimal>(),
+                    IsInitiative = receivedSwap["isInitiator"].Value<bool>(),
 
-                TimeStamp    = receivedSwap["timeStamp"].Value<DateTime>(),
-                Symbol       = receivedSwap["symbol"].Value<string>(),
-                Side         = (Side)Enum.Parse(typeof(Side), receivedSwap["side"].Value<string>()),
-                Price        = receivedSwap["price"].Value<decimal>(),
-                Qty          = receivedSwap["qty"].Value<decimal>(),
-                IsInitiative = receivedSwap["isInitiator"].Value<bool>(),
+                    ToAddress       = receivedSwap["user"]?["requisites"]?["receivingAddress"]?.Value<string>(),
+                    RewardForRedeem = receivedSwap["user"]?["requisites"]?["rewardForRedeem"]?.Value<decimal>() ?? 0,
+                    OrderId         = receivedSwap["user"]?["trades"]?[0]?["orderId"]?.Value<long>() ?? 0,
 
-                ToAddress       = receivedSwap["user"]?["requisites"]?["receivingAddress"]?.Value<string>(),
-                RewardForRedeem = receivedSwap["user"]?["requisites"]?["rewardForRedeem"]?.Value<decimal>() ?? 0,
-                OrderId         = receivedSwap["user"]?["trades"]?[0]?["orderId"]?.Value<long>() ?? 0,
-
-                PartyAddress         = receivedSwap["counterParty"]?["requisites"]?["receivingAddress"]?.Value<string>(),
-                PartyRewardForRedeem = receivedSwap["counterParty"]?["requisites"]?["rewardForRedeem"]?.Value<decimal>() ?? 0,
-            };
+                    PartyAddress         = receivedSwap["counterParty"]?["requisites"]?["receivingAddress"]?.Value<string>(),
+                    PartyRewardForRedeem = receivedSwap["counterParty"]?["requisites"]?["rewardForRedeem"]?.Value<decimal>() ?? 0,
+                },
+                needToWait: userStatus == PartyStatus.Created || partyStatus == PartyStatus.Created
+            );
         }
 
         private async Task SwapsWaitingAsync(CancellationToken cancellationToken = default)
@@ -534,12 +538,18 @@ namespace Atomex.Subsystems
 
                     foreach ( var receivedSwap in receivedSwaps)
                     {
-                        var swap = ParseSwap(receivedSwap);
+                        var (swap, needToWait) = ParseSwap(receivedSwap);
 
                         Log.Debug($"Swap with id {swap.Id} found.");
 
                         if (lastSwapId < swap.Id)
                             lastSwapId = swap.Id;
+
+                        if (needToWait)
+                        {
+                            // needs to wait
+                            _waitingQueue.Add((swap.Id, DateTimeOffset.UtcNow));
+                        }
                     }
 
                     await Task
