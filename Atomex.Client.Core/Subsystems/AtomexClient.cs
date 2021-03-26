@@ -119,6 +119,7 @@ namespace Atomex.Subsystems
             _ = SwapsTrackerAsync(_cts.Token);
             _ = SwapsWaitingAsync(_cts.Token);
             _ = SwapsUpdaterAsync(_cts.Token);
+            _ = RunAuthTokenUpdatingLoopAsync(_cts.Token);
         }
 
         public Task StopAsync()
@@ -563,7 +564,43 @@ namespace Atomex.Subsystems
             }
             catch (Exception e)
             {
-                Log.Error(e, "Swaps updater error");
+                Log.Error(e, "SwapsUpdaterAsync error.");
+            }
+        }
+
+        private async Task RunAuthTokenUpdatingLoopAsync(
+            CancellationToken cancellationToken = default)
+        {
+            const int UpdateIntervalInHours = 10;
+
+            var updateTimeStamp = DateTimeOffset.UtcNow + TimeSpan.FromHours(UpdateIntervalInHours);
+
+            try
+            {
+                while (!cancellationToken.IsCancellationRequested)
+                {
+                    if (DateTimeOffset.UtcNow >= updateTimeStamp)
+                    {
+                        updateTimeStamp = DateTimeOffset.UtcNow + TimeSpan.FromHours(UpdateIntervalInHours);
+
+                        _token = await AuthAsync()
+                            .ConfigureAwait(false);
+                    }
+                    else
+                    {
+                        await Task
+                            .Delay(updateTimeStamp - DateTimeOffset.UtcNow, cancellationToken)
+                            .ConfigureAwait(false);
+                    }
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                Log.Debug("RunAuthTokenUpdatingLoopAsync canceled.");
+            }
+            catch (Exception e)
+            {
+                Log.Error(e, "RunAuthTokenUpdatingLoopAsync error.");
             }
         }
 
