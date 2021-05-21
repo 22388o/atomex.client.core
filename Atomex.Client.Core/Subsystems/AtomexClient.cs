@@ -22,6 +22,7 @@ using Atomex.Subsystems.Abstract;
 using Atomex.Swaps;
 using Atomex.Swaps.Abstract;
 using Atomex.Wallet.Abstract;
+using Atomex.TezosTokens;
 
 namespace Atomex.Subsystems
 {
@@ -318,8 +319,9 @@ namespace Atomex.Subsystems
         private string GetSwapContract(string currency) =>
             currency switch
             {
-                "ETH" => Account.Currencies.Get<Ethereum>("ETH").SwapContractAddress,
-                "XTZ" => Account.Currencies.Get<Tezos>("XTZ").SwapContractAddress,
+                "ETH"   => Account.Currencies.Get<Ethereum>("ETH").SwapContractAddress,
+                "XTZ"   => Account.Currencies.Get<Tezos>("XTZ").SwapContractAddress,
+                "TZBTC" => Account.Currencies.Get<FA12>("TZBTC").SwapContractAddress,
                 _ => null
             };
 
