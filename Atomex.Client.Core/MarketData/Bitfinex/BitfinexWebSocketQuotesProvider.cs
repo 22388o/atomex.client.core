@@ -1,15 +1,12 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Linq;
-using System.Net.WebSockets;
-
 using Atomex.Core;
 using Atomex.MarketData.Abstract;
 using Newtonsoft.Json.Linq;
 using Serilog;
-using Websocket.Client;
-using WebsocketClient = Atomex.Web.WebSocketClient;
-
+using WebSocketSharp;
+using ErrorEventArgs = WebSocketSharp.ErrorEventArgs;
 
 namespace Atomex.MarketData.Bitfinex
 {
@@ -19,7 +16,7 @@ namespace Atomex.MarketData.Bitfinex
 
         private readonly Dictionary<int, string> _channels;
         private readonly Dictionary<string, Quote> _quotes;
-        private WebsocketClient _ws;
+        private WebSocket _ws;
 
         public event EventHandler QuotesUpdated;
         public event EventHandler AvailabilityChanged;
@@ -31,11 +28,11 @@ namespace Atomex.MarketData.Bitfinex
         public bool IsAvailable
         {
             get => _isAvailable;
-            private set
-            {
+            private set {
                 _isAvailable = value;
                 AvailabilityChanged?.Invoke(this, EventArgs.Empty);
             }
+
         }
 
         public BitfinexWebSocketQuotesProvider(params string[] symbols)
@@ -54,18 +51,18 @@ namespace Atomex.MarketData.Bitfinex
 
         public void Start()
         {
-            _ws = new WebsocketClient(BaseUrl);
-            
-            _ws.Connected += OnOpenEventHandler;
-            _ws.Disconnected += OnCloseEventHandler;
+            _ws = new WebSocket(BaseUrl) { Log = { Output = (data, s) => { } } };
+            _ws.OnOpen += OnOpenEventHandler;
+            _ws.OnClose += OnCloseEventHandler;
+            _ws.OnError += OnErrorEventHandler;
             _ws.OnMessage += OnMessageEventHandler;
 
-            _ws.ConnectAsync();
+            _ws.Connect();
         }
 
         public void Stop()
         {
-            _ws.CloseAsync();
+            _ws.Close(CloseStatusCode.Normal);
         }
 
         public Quote GetQuote(string currency, string baseCurrency)
@@ -84,18 +81,23 @@ namespace Atomex.MarketData.Bitfinex
             SubscribeToTickers();
         }
 
-        private void OnCloseEventHandler(object sender, EventArgs e)
+        private void OnCloseEventHandler(object sender, CloseEventArgs args)
         {
             IsAvailable = false;
         }
 
-        private void OnMessageEventHandler(object sender, ResponseMessage msg)
+        private void OnErrorEventHandler(object sender, ErrorEventArgs args)
+        {
+            Log.Error(args.Exception, "Bitfinex WebSocket error: {@message}", args.Message);
+        }
+
+        private void OnMessageEventHandler(object sender, MessageEventArgs args)
         {
             try
             {
-                if (msg.MessageType == WebSocketMessageType.Text)
+                if (args.IsText)
                 {
-                    var response = JToken.Parse(msg.Text);
+                    var response = JToken.Parse(args.Data);
 
                     if (response is JObject responseEvent)
                     {
