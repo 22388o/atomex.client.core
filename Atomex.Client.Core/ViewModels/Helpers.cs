@@ -5,6 +5,9 @@ using System.Linq;
 using System.Net.Http;
 using System.Threading;
 using System.Threading.Tasks;
+
+using Newtonsoft.Json;
+
 using Atomex.Abstract;
 using Atomex.Blockchain.Abstract;
 using Atomex.Common;
@@ -12,7 +15,6 @@ using Atomex.Core;
 using Atomex.Cryptography;
 using Atomex.Services.Abstract;
 using Atomex.Wallet.Abstract;
-using Newtonsoft.Json;
 
 namespace Atomex.ViewModels
 {
@@ -803,7 +805,7 @@ namespace Atomex.ViewModels
                     baseUri: "https://test.atomex.me/",
                     content: null,
                     requestUri: $"usermessages/get_user_messages/{messageId}/mark_read/",
-                    responseHandler: response => response,
+                    responseHandler: async response => response,
                     cancellationToken: cancellationToken)
                 .ConfigureAwait(false);
         }

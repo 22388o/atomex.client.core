@@ -3,8 +3,10 @@ using System.Collections.Generic;
 using System.Net.Http;
 using System.Threading;
 using System.Threading.Tasks;
-using Atomex.Core;
+
 using Serilog;
+
+using Atomex.Core;
 
 namespace Atomex.Common
 {
@@ -25,7 +27,7 @@ namespace Atomex.Common
                 baseUri: baseUri,
                 requestUri: requestUri,
                 headers: null,
-                responseHandler: responseHandler,
+                responseHandler: async response => responseHandler(response),
                 cancellationToken: cancellationToken);
         }
 
@@ -33,7 +35,7 @@ namespace Atomex.Common
             string baseUri,
             string requestUri,
             HttpRequestHeaders headers,
-            Func<HttpResponseMessage, T> responseHandler,
+            Func<HttpResponseMessage, Task<T>> responseHandler,
             CancellationToken cancellationToken = default)
         {
             return SendRequestAsync(
@@ -71,11 +73,11 @@ namespace Atomex.Common
                 baseUri: baseUri,
                 requestUri: requestUri,
                 headers: headers,
-                responseHandler: response =>
+                responseHandler: async response =>
                 {
-                    var responseContent = response.Content
+                    var responseContent = await response.Content
                         .ReadAsStringAsync()
-                        .WaitForResult();
+                        .ConfigureAwait(false);
 
                     return !response.IsSuccessStatusCode
                         ? new Error((int)response.StatusCode, responseContent)
@@ -88,7 +90,7 @@ namespace Atomex.Common
             string baseUri,
             string requestUri,
             HttpContent content,
-            Func<HttpResponseMessage, T> responseHandler,
+            Func<HttpResponseMessage, Task<T>> responseHandler,
             CancellationToken cancellationToken = default)
         {
             return SendRequestAsync(
@@ -101,23 +103,23 @@ namespace Atomex.Common
                 cancellationToken: cancellationToken);
         }
 
-        public static Task<T> PostAsync<T>(
-            string baseUri,
-            string requestUri,
-            HttpContent content,
-            HttpRequestHeaders headers,
-            Func<HttpResponseMessage, T> responseHandler,
-            CancellationToken cancellationToken = default)
-        {
-            return SendRequestAsync(
-                baseUri: baseUri,
-                requestUri: requestUri,
-                method: HttpMethod.Post,
-                content: content,
-                headers: headers,
-                responseHandler: responseHandler,
-                cancellationToken: cancellationToken);
-        }
+        //public static Task<T> PostAsync<T>(
+        //    string baseUri,
+        //    string requestUri,
+        //    HttpContent content,
+        //    HttpRequestHeaders headers,
+        //    Func<HttpResponseMessage, T> responseHandler,
+        //    CancellationToken cancellationToken = default)
+        //{
+        //    return SendRequestAsync(
+        //        baseUri: baseUri,
+        //        requestUri: requestUri,
+        //        method: HttpMethod.Post,
+        //        content: content,
+        //        headers: headers,
+        //        responseHandler: responseHandler,
+        //        cancellationToken: cancellationToken);
+        //}
 
         public static Task<Result<T>> PostAsyncResult<T>(
             string baseUri,
@@ -130,11 +132,11 @@ namespace Atomex.Common
                 baseUri: baseUri,
                 requestUri: requestUri,
                 content: content,
-                responseHandler: response =>
+                responseHandler: async response =>
                 {
-                    var responseContent = response.Content
+                    var responseContent = await response.Content
                         .ReadAsStringAsync()
-                        .WaitForResult();
+                        .ConfigureAwait(false);
 
                     return !response.IsSuccessStatusCode
                         ? new Error((int)response.StatusCode, responseContent)
@@ -143,31 +145,31 @@ namespace Atomex.Common
                 cancellationToken: cancellationToken);
         }
         
-        public static Task<Result<T>> PostAsyncResult<T>(
-            string baseUri,
-            string requestUri,
-            HttpContent content,
-            HttpRequestHeaders headers,
-            Func<HttpResponseMessage, string, Result<T>> responseHandler,
-            CancellationToken cancellationToken = default)
-        {
-            return PostAsync(
-                baseUri: baseUri,
-                requestUri: requestUri,
-                content: content,
-                headers: headers,
-                responseHandler: response =>
-                {
-                    var responseContent = response.Content
-                        .ReadAsStringAsync()
-                        .WaitForResult();
+        //public static Task<Result<T>> PostAsyncResult<T>(
+        //    string baseUri,
+        //    string requestUri,
+        //    HttpContent content,
+        //    HttpRequestHeaders headers,
+        //    Func<HttpResponseMessage, string, Result<T>> responseHandler,
+        //    CancellationToken cancellationToken = default)
+        //{
+        //    return PostAsync(
+        //        baseUri: baseUri,
+        //        requestUri: requestUri,
+        //        content: content,
+        //        headers: headers,
+        //        responseHandler: response =>
+        //        {
+        //            var responseContent = response.Content
+        //                .ReadAsStringAsync()
+        //                .WaitForResult();
 
-                    return !response.IsSuccessStatusCode
-                        ? new Error((int)response.StatusCode, responseContent)
-                        : responseHandler(response, responseContent);
-                },
-                cancellationToken: cancellationToken);
-        }
+        //            return !response.IsSuccessStatusCode
+        //                ? new Error((int)response.StatusCode, responseContent)
+        //                : responseHandler(response, responseContent);
+        //        },
+        //        cancellationToken: cancellationToken);
+        //}
 
         private static async Task<T> SendRequestAsync<T>(
             string baseUri,
@@ -175,7 +177,7 @@ namespace Atomex.Common
             HttpMethod method,
             HttpContent content,
             HttpRequestHeaders headers,
-            Func<HttpResponseMessage, T> responseHandler,
+            Func<HttpResponseMessage, Task<T>> responseHandler,
             CancellationToken cancellationToken = default)
         {
             Log.Debug("Send {@method} request: {@baseUri}{@request}", 
@@ -198,7 +200,7 @@ namespace Atomex.Common
                     response.IsSuccessStatusCode ? "Success status code: {@code}" : "Http error code: {@code}",
                     response.StatusCode);
 
-                return responseHandler(response);
+                return await responseHandler(response);
             }
             catch (HttpRequestException e)
             {
