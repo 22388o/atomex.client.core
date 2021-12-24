@@ -1,10 +1,12 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.IO;
+
+using Microsoft.Extensions.Configuration;
+
 using Atomex.Api;
 using Atomex.Api.Proto;
 using Atomex.MarketData;
-using Microsoft.Extensions.Configuration;
 
 namespace Atomex.Web
 {
@@ -14,6 +16,8 @@ namespace Atomex.Web
         public event EventHandler<EntriesEventArgs> EntriesReceived;
         public event EventHandler<SnapshotEventArgs> SnapshotReceived; 
         public event EventHandler<OrderLogEventArgs> OrderLogReceived;
+
+        public override string Name => "MarketData";
 
         public MarketDataWebClient(IConfiguration configuration, ProtoSchemes schemes)
             : this(configuration["MarketData:Url"], schemes)

@@ -1,5 +1,6 @@
 ﻿using System;
 using System.IO;
+
 using Microsoft.Extensions.Configuration;
 
 using Atomex.Api;
@@ -16,6 +17,8 @@ namespace Atomex.Web
 
         public event EventHandler<OrderEventArgs> OrderReceived;
         public event EventHandler<SwapEventArgs> SwapReceived;
+
+        public override string Name => "Exchange";
 
         public ExchangeWebClient(IConfiguration configuration, ProtoSchemes schemes)
             : this(configuration[ExchangeUrlKey], schemes)

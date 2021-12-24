@@ -13,6 +13,7 @@ namespace Atomex.Web
         private Action<MemoryStream>[] Handlers { get; } = new Action<MemoryStream>[MaxHandlersCount];
         protected ProtoSchemes Schemes { get; }
 
+        public virtual string Name { get; }
         public AuthNonce Nonce { get; private set; }
         public event EventHandler AuthOk;
         public event EventHandler AuthNonce;
@@ -75,8 +76,10 @@ namespace Atomex.Web
         {
             var pong = Schemes.HeartBeat.DeserializeWithLengthPrefix(stream);
 
-            if (pong.ToLowerInvariant() != "pong")
-                Log.Error("Invalid heart beat response");
+            if (pong.ToLowerInvariant() == "pong")
+                Log.Debug($"Pong received from {Name}");
+            else
+                Log.Error("Invalid heart beat response");    
         }
     }
 }

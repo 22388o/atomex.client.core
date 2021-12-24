@@ -686,6 +686,8 @@ namespace Atomex.Services
             {
                 try
                 {
+                    Log.Debug($"Send ping to {webSocketClient.Name}");
+
                     webSocketClient.SendHeartBeatAsync();
 
                     await Task.Delay(HeartBeatInterval, cancellationToken)
