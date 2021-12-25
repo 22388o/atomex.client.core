@@ -26,9 +26,10 @@ namespace Atomex.Blockchain.Ethereum
         private const string ApiKey = "2R1AIHZZE5NVSHRQUGAHU8EYNYYZ5B2Y37";
         private const int MinDelayBetweenRequestMs = 1000;
         private static readonly int prefixOffset = 2;
+        private const int GasOracleTimeoutSec = 10;
 
         private static readonly RequestLimitControl RequestLimitControl 
-            = new RequestLimitControl(MinDelayBetweenRequestMs);
+            = new(MinDelayBetweenRequestMs);
 
         private string BaseUrl { get; }
 
@@ -601,7 +602,7 @@ namespace Atomex.Blockchain.Ethereum
             IBlockchainTransaction transaction,
             CancellationToken cancellationToken = default)
         {
-            if (!(transaction is EthereumTransaction ethTx))
+            if (transaction is not EthereumTransaction ethTx)
                 return new Error(Errors.TransactionBroadcastError, "Invalid transaction type.");
 
             var requestUri = $"api?module=proxy&action=eth_sendRawTransaction&hex=0x{ethTx.RlpEncodedTx}&apikey={ApiKey}";
@@ -802,6 +803,12 @@ namespace Atomex.Blockchain.Ethereum
                 .Wait(cancellationToken)
                 .ConfigureAwait(false);
 
+            var gasOracleTimeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(GasOracleTimeoutSec));
+
+            var linkedTokenSource = CancellationTokenSource.CreateLinkedTokenSource(
+                gasOracleTimeoutCts.Token,
+                cancellationToken);
+
             return await HttpHelper.GetAsyncResult(
                    baseUri: baseUri,
                    requestUri: requestUri,
@@ -822,7 +829,7 @@ namespace Atomex.Blockchain.Ethereum
                            ? new Result<GasPrice>(_gasPrice)
                            : new Result<GasPrice>(new Error(Errors.InvalidResponse, "Invalid response"));
                    },
-                   cancellationToken: cancellationToken)
+                   cancellationToken: linkedTokenSource.Token)
                .ConfigureAwait(false);
         }
 
