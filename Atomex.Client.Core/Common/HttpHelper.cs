@@ -187,20 +187,24 @@ namespace Atomex.Common
 
             try
             {
-                using var response = await SendRequest(
-                        baseUri: baseUri, 
-                        requestUri: requestUri,
-                        method: method,
-                        content: content, 
-                        headers: headers,
-                        cancellationToken: cancellationToken)
-                    .ConfigureAwait(false);
+                return await Task.Run(async () =>
+                {
+                    using var response = await SendRequest(
+                            baseUri: baseUri,
+                            requestUri: requestUri,
+                            method: method,
+                            content: content,
+                            headers: headers,
+                            cancellationToken: cancellationToken)
+                        .ConfigureAwait(false);
 
-                Log.Debug(
-                    response.IsSuccessStatusCode ? "Success status code: {@code}" : "Http error code: {@code}",
-                    response.StatusCode);
+                    Log.Debug(
+                        response.IsSuccessStatusCode ? "Success status code: {@code}" : "Http error code: {@code}",
+                        response.StatusCode);
 
-                return await responseHandler(response);
+                    return await responseHandler(response);
+
+                }, cancellationToken);
             }
             catch (HttpRequestException e)
             {
